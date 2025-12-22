@@ -23,7 +23,7 @@ An MCP (Model Context Protocol) server that enables Claude AI to control a Spher
 The Sphero SDK should be available on your Pi:
 
 ```bash
-cd /home/pi
+cd ~
 git clone https://github.com/sphero-inc/sphero-sdk-raspberrypi-python.git
 ```
 
@@ -39,7 +39,7 @@ pip install -e .
 pip install fastmcp pydantic
 
 # Add Sphero SDK to Python path (add to ~/.bashrc for persistence)
-export PYTHONPATH="${PYTHONPATH}:/home/pi/sphero-sdk-raspberrypi-python"
+export PYTHONPATH="${PYTHONPATH}:${HOME}/sphero-sdk-raspberrypi-python"
 ```
 
 ### 3. Install Claude Code
@@ -55,7 +55,7 @@ npm install -g @anthropic-ai/claude-code
 
 ### 4. Configure Claude Code
 
-Create or edit `~/.claude.json`:
+Create or edit `~/.claude.json` (replace `<your-home-dir>` with your home path, e.g., `/home/pi`):
 
 ```json
 {
@@ -65,7 +65,7 @@ Create or edit `~/.claude.json`:
       "command": "python",
       "args": ["-m", "sphero_rvr_mcp"],
       "env": {
-        "PYTHONPATH": "/home/pi/sphero-sdk-raspberrypi-python"
+        "PYTHONPATH": "<your-home-dir>/sphero-sdk-raspberrypi-python"
       }
     }
   }
