@@ -1,6 +1,6 @@
 # Sphero RVR MCP Server
 
-An MCP (Model Context Protocol) server that enables Claude AI to control a Sphero RVR robot. Run this on a Raspberry Pi connected to your RVR, and use Claude Code to drive, control LEDs, read sensors, and more.
+An MCP (Model Context Protocol) server that enables Claude AI to control a [Sphero RVR](https://sphero.com/collections/rvr) robot. Run this on a Raspberry Pi connected to your RVR, and use Claude Code to drive, control LEDs, read sensors, and more.
 
 ## Features
 
