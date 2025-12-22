@@ -5,6 +5,9 @@ import time
 from enum import Enum
 from typing import Optional
 
+import nest_asyncio
+nest_asyncio.apply()
+
 from .config import RvrConfig
 
 
@@ -98,7 +101,7 @@ class RvrManager:
             # Import SDK here to allow running without hardware for testing
             from sphero_sdk import SpheroRvrAsync, SerialAsyncDal
 
-            self._loop = asyncio.get_event_loop()
+            self._loop = asyncio.get_running_loop()
 
             self._dal = SerialAsyncDal(
                 self._loop,
