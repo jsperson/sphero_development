@@ -554,16 +554,57 @@ async def get_ambient_light() -> dict:
 
 
 @mcp.tool()
+async def enable_color_detection(enabled: bool = True) -> dict:
+    """Enable or disable the color sensor's illumination LED.
+
+    Must be enabled before color detection will return valid readings.
+
+    Args:
+        enabled: True to enable, False to disable.
+
+    Returns:
+        Result.
+    """
+    try:
+        rvr_mgr, _, _ = _ensure_initialized()
+        rvr_mgr.ensure_connected()
+
+        await rvr_mgr.rvr.enable_color_detection(is_enabled=enabled)
+        return {
+            "success": True,
+            "enabled": enabled,
+            "message": "Color detection LED enabled" if enabled else "Color detection LED disabled"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
 async def get_color_detection() -> dict:
     """Query color sensor directly (not from streaming cache).
+
+    Automatically enables the illumination LED, reads the color, then disables the LED.
 
     Returns:
         Color values (R, G, B, C).
     """
     try:
-        _, sensor_mgr, _ = _ensure_initialized()
+        rvr_mgr, sensor_mgr, _ = _ensure_initialized()
+        rvr_mgr.ensure_connected()
 
+        # Enable illumination LED
+        await rvr_mgr.rvr.enable_color_detection(is_enabled=True)
+
+        # Brief pause to let sensor stabilize
+        import asyncio
+        await asyncio.sleep(0.1)
+
+        # Read color
         color = await sensor_mgr.query_color_detection()
+
+        # Disable illumination LED
+        await rvr_mgr.rvr.enable_color_detection(is_enabled=False)
+
         if color is not None:
             return {"success": True, **color}
         return {"success": False, "error": "Failed to read color sensor"}
