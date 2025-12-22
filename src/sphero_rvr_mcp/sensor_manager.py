@@ -319,3 +319,56 @@ class SensorManager:
         except Exception:
             pass
         return None
+
+    async def query_magnetometer(self) -> Optional[dict]:
+        """Query magnetometer sensor directly.
+
+        Returns:
+            Dict with x, y, z magnetic field values or None on error.
+        """
+        self._rvr_manager.ensure_connected()
+        rvr = self._rvr_manager.rvr
+
+        try:
+            response = await rvr.get_magnetometer_reading()
+            if response:
+                return {
+                    'x': response.get('x_axis', 0.0),
+                    'y': response.get('y_axis', 0.0),
+                    'z': response.get('z_axis', 0.0)
+                }
+        except Exception:
+            pass
+        return None
+
+    async def get_locator_position(self) -> Optional[dict]:
+        """Get current X, Y position from locator streaming cache.
+
+        Returns:
+            Dict with x, y position in meters or None if not available.
+        """
+        data = await self.get_streaming_data(['locator'])
+        if 'locator' in data and data['locator'].get('is_fresh', False):
+            locator_data = data['locator']['data']
+            return {
+                'x': locator_data.get('X', 0.0),
+                'y': locator_data.get('Y', 0.0)
+            }
+        return None
+
+    async def ensure_locator_streaming(self, interval_ms: int = 50) -> bool:
+        """Ensure locator sensor is streaming.
+
+        Starts locator streaming if not already enabled.
+
+        Args:
+            interval_ms: Streaming interval in milliseconds.
+
+        Returns:
+            True if locator is streaming.
+        """
+        if 'locator' in self._enabled_sensors:
+            return True
+
+        enabled = await self.start_streaming(['locator'], interval_ms)
+        return 'locator' in enabled

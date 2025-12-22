@@ -1,5 +1,8 @@
 """Sphero RVR MCP Server - Main server with tool definitions."""
 
+import asyncio
+import math
+import time
 from typing import Optional
 from fastmcp import FastMCP
 
@@ -10,6 +13,57 @@ from .safety_controller import SafetyController
 
 # Create FastMCP server instance
 mcp = FastMCP("sphero-rvr")
+
+
+# =============================================================================
+# Heading Utility Functions
+# =============================================================================
+
+def calculate_heading_from_magnetometer(x: float, y: float) -> float:
+    """Calculate compass heading from magnetometer x/y values.
+
+    Args:
+        x: Magnetometer X-axis reading.
+        y: Magnetometer Y-axis reading.
+
+    Returns:
+        Heading in degrees (0-360), where 0 = North, 90 = East.
+    """
+    heading_rad = math.atan2(y, x)
+    heading_deg = math.degrees(heading_rad)
+    # Normalize to 0-360 range
+    heading_deg = (heading_deg + 360) % 360
+    return heading_deg
+
+
+def normalize_angle(angle: float) -> float:
+    """Normalize angle to range [-180, 180).
+
+    Args:
+        angle: Angle in degrees.
+
+    Returns:
+        Normalized angle in degrees.
+    """
+    while angle >= 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
+
+def angle_difference(current: float, previous: float) -> float:
+    """Calculate angular difference handling wraparound.
+
+    Args:
+        current: Current angle in degrees.
+        previous: Previous angle in degrees.
+
+    Returns:
+        Signed difference in degrees.
+    """
+    diff = current - previous
+    return normalize_angle(diff)
 
 # Global state (initialized on connect)
 _config: Optional[RvrConfig] = None
@@ -45,6 +99,20 @@ async def connect(port: str = "/dev/ttyS0", baud: int = 115200) -> dict:
         Connection result with success status and message.
     """
     global _config, _rvr_manager, _sensor_manager, _safety_controller
+
+    # Clean up any existing connection first
+    if _rvr_manager is not None:
+        try:
+            if _sensor_manager:
+                await _sensor_manager.stop_streaming()
+            await _rvr_manager.disconnect()
+        except Exception:
+            pass  # Ignore errors during cleanup
+        _rvr_manager = None
+        _sensor_manager = None
+        _safety_controller = None
+        # Give serial port time to release
+        await asyncio.sleep(0.5)
 
     _config = load_config_from_env()
     _config.serial.port = port
@@ -151,6 +219,9 @@ async def drive_with_heading(
             flags=flags
         )
 
+        # Allow SDK to process the command
+        await asyncio.sleep(0.05)
+
         return {
             "success": True,
             "actual_speed": actual_speed,
@@ -185,6 +256,9 @@ async def drive_tank(left_velocity: float, right_velocity: float) -> dict:
             right_velocity=actual_right
         )
 
+        # Allow SDK to process the command
+        await asyncio.sleep(0.05)
+
         return {
             "success": True,
             "actual_left_velocity": actual_left,
@@ -202,6 +276,8 @@ async def drive_rc(linear_velocity: float, yaw_velocity: float) -> dict:
     Args:
         linear_velocity: Forward/backward velocity in m/s (-1.5 to 1.5).
         yaw_velocity: Turning rate in degrees/second.
+                      Positive = turn right (clockwise),
+                      negative = turn left (counter-clockwise).
 
     Returns:
         Drive result with actual velocities applied.
@@ -215,9 +291,12 @@ async def drive_rc(linear_velocity: float, yaw_velocity: float) -> dict:
 
         await rvr_mgr.rvr.drive_rc_si_units(
             linear_velocity=actual_linear,
-            yaw_angular_velocity=yaw_velocity,
+            yaw_angular_velocity=-yaw_velocity,  # Invert: positive = right
             flags=0
         )
+
+        # Allow SDK to process the command
+        await asyncio.sleep(0.05)
 
         return {
             "success": True,
@@ -261,6 +340,9 @@ async def drive_to_position(
             linear_speed=actual_speed,
             flags=0
         )
+
+        # Allow SDK to process the command
+        await asyncio.sleep(0.05)
 
         return {
             "success": True,
@@ -609,6 +691,394 @@ async def get_color_detection() -> dict:
             return {"success": True, **color}
         return {"success": False, "error": "Failed to read color sensor"}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# =============================================================================
+# Navigation Tools
+# =============================================================================
+
+@mcp.tool()
+async def get_heading() -> dict:
+    """Get current compass heading from magnetometer.
+
+    Returns:
+        Current heading in degrees (0-360, where 0 = North, 90 = East),
+        along with raw magnetometer values for debugging.
+    """
+    try:
+        _, sensor_mgr, _ = _ensure_initialized()
+
+        mag_data = await sensor_mgr.query_magnetometer()
+        if mag_data is None:
+            return {"success": False, "error": "Failed to read magnetometer"}
+
+        heading = calculate_heading_from_magnetometer(
+            mag_data['x'],
+            mag_data['y']
+        )
+
+        return {
+            "success": True,
+            "heading": heading,
+            "raw_x": mag_data['x'],
+            "raw_y": mag_data['y'],
+            "raw_z": mag_data['z']
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def pivot(
+    degrees: float,
+    speed: float = 60.0,
+    tolerance: float = 3.0,
+    timeout_seconds: float = 10.0
+) -> dict:
+    """Pivot (turn in place) by a specified number of degrees.
+
+    Uses magnetometer feedback for accurate turning. The robot will
+    rotate in place until the target angle is reached.
+
+    Args:
+        degrees: Degrees to turn. Positive = turn right (clockwise),
+                 negative = turn left (counter-clockwise).
+        speed: Turning speed in degrees/second (default: 60, max: 180).
+               Lower values give more precision.
+        tolerance: Acceptable error in degrees (default: 3).
+        timeout_seconds: Maximum time to complete pivot (default: 10).
+
+    Returns:
+        Result with actual angle turned and final heading.
+    """
+    try:
+        rvr_mgr, sensor_mgr, safety = _ensure_initialized()
+        rvr_mgr.ensure_connected()
+
+        await safety.on_movement_command()
+
+        # Handle zero rotation
+        if abs(degrees) < tolerance:
+            return {
+                "success": True,
+                "degrees_turned": 0,
+                "target_degrees": degrees,
+                "message": "No rotation needed"
+            }
+
+        # Clamp speed to safe range
+        speed = max(10.0, min(180.0, abs(speed)))
+
+        # Get initial heading from magnetometer
+        initial_mag = await sensor_mgr.query_magnetometer()
+        if initial_mag is None:
+            return {"success": False, "error": "Failed to read magnetometer"}
+
+        initial_heading = calculate_heading_from_magnetometer(
+            initial_mag['x'], initial_mag['y']
+        )
+
+        # Determine turn direction
+        # Positive degrees = turn right = positive yaw_velocity (after our inversion)
+        turn_direction = 1 if degrees > 0 else -1
+        # SDK expects negative for CW, but we inverted in drive_rc
+        # Here we call SDK directly, so we need to negate for CW (right)
+        yaw_velocity = -speed * turn_direction
+
+        start_time = time.time()
+        total_turned = 0.0
+        last_heading = initial_heading
+
+        # Polling interval
+        poll_interval = 0.05
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                await rvr_mgr.rvr.drive_stop()
+                return {
+                    "success": False,
+                    "error": "Timeout reached",
+                    "degrees_turned": total_turned,
+                    "target_degrees": degrees,
+                    "elapsed_seconds": elapsed
+                }
+
+            # Get current heading
+            current_mag = await sensor_mgr.query_magnetometer()
+            if current_mag is None:
+                await asyncio.sleep(poll_interval)
+                continue
+
+            current_heading = calculate_heading_from_magnetometer(
+                current_mag['x'], current_mag['y']
+            )
+
+            # Track cumulative turn (handles wraparound)
+            delta = angle_difference(current_heading, last_heading)
+            total_turned += delta
+            last_heading = current_heading
+
+            # Check if target reached
+            remaining = abs(degrees) - abs(total_turned)
+            if remaining <= tolerance:
+                await rvr_mgr.rvr.drive_stop()
+                await asyncio.sleep(0.1)  # Let it settle
+
+                # Get final reading
+                final_mag = await sensor_mgr.query_magnetometer()
+                final_heading = calculate_heading_from_magnetometer(
+                    final_mag['x'], final_mag['y']
+                ) if final_mag else current_heading
+
+                return {
+                    "success": True,
+                    "degrees_turned": total_turned,
+                    "target_degrees": degrees,
+                    "initial_heading": initial_heading,
+                    "final_heading": final_heading,
+                    "elapsed_seconds": time.time() - start_time
+                }
+
+            # Slow down as we approach target for precision
+            current_speed = speed
+            if remaining < 15:
+                current_speed = max(15.0, speed * (remaining / 15.0))
+            current_yaw = -current_speed * turn_direction
+
+            # Send drive command
+            await rvr_mgr.rvr.drive_rc_si_units(
+                linear_velocity=0,
+                yaw_angular_velocity=current_yaw,
+                flags=0
+            )
+
+            await asyncio.sleep(poll_interval)
+
+    except Exception as e:
+        # Ensure stop on error
+        try:
+            rvr_mgr, _, _ = _ensure_initialized()
+            await rvr_mgr.rvr.drive_stop()
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def drive_forward(
+    distance: float,
+    speed: float = 0.5,
+    tolerance: float = 0.01,
+    timeout_seconds: float = 30.0
+) -> dict:
+    """Drive forward a specified distance in meters.
+
+    Uses locator sensor for accurate distance measurement.
+    Maintains current heading (does not reset yaw).
+
+    Args:
+        distance: Distance to travel in meters.
+        speed: Travel speed in m/s (default: 0.5, max: 1.5).
+        tolerance: Acceptable distance error in meters (default: 0.01 = 1cm).
+        timeout_seconds: Maximum time to complete (default: 30).
+
+    Returns:
+        Result with actual distance traveled.
+    """
+    try:
+        rvr_mgr, sensor_mgr, safety = _ensure_initialized()
+        rvr_mgr.ensure_connected()
+
+        await safety.on_movement_command()
+
+        # Clamp speed to safe range
+        speed = max(0.1, min(1.5, abs(speed)))
+
+        # Reset locator to origin
+        await rvr_mgr.rvr.reset_locator_x_and_y()
+        await asyncio.sleep(0.1)
+
+        # Start locator streaming
+        streaming_started = await sensor_mgr.ensure_locator_streaming(interval_ms=50)
+        if not streaming_started:
+            return {"success": False, "error": "Failed to start locator streaming"}
+
+        # Wait for first locator reading
+        await asyncio.sleep(0.1)
+
+        start_time = time.time()
+        poll_interval = 0.05
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                await rvr_mgr.rvr.drive_stop()
+                return {
+                    "success": False,
+                    "error": "Timeout reached",
+                    "distance_traveled": 0,
+                    "target_distance": distance,
+                    "elapsed_seconds": elapsed
+                }
+
+            # Get current position
+            position = await sensor_mgr.get_locator_position()
+            if position is None:
+                # Drive forward while waiting for position data
+                await rvr_mgr.rvr.drive_rc_si_units(
+                    linear_velocity=speed,
+                    yaw_angular_velocity=0,
+                    flags=0
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
+            # Calculate distance traveled
+            current_distance = math.sqrt(position['x']**2 + position['y']**2)
+
+            # Check if target reached
+            remaining = distance - current_distance
+            if remaining <= tolerance:
+                await rvr_mgr.rvr.drive_stop()
+                await asyncio.sleep(0.1)
+
+                return {
+                    "success": True,
+                    "distance_traveled": current_distance,
+                    "target_distance": distance,
+                    "elapsed_seconds": time.time() - start_time
+                }
+
+            # Slow down as approaching target
+            current_speed = speed
+            if remaining < 0.05:  # Within 5cm
+                current_speed = max(0.1, speed * (remaining / 0.05))
+
+            # Drive forward
+            await rvr_mgr.rvr.drive_rc_si_units(
+                linear_velocity=current_speed,
+                yaw_angular_velocity=0,
+                flags=0
+            )
+
+            await asyncio.sleep(poll_interval)
+
+    except Exception as e:
+        try:
+            rvr_mgr, _, _ = _ensure_initialized()
+            await rvr_mgr.rvr.drive_stop()
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def drive_backward(
+    distance: float,
+    speed: float = 0.5,
+    tolerance: float = 0.01,
+    timeout_seconds: float = 30.0
+) -> dict:
+    """Drive backward a specified distance in meters.
+
+    Uses locator sensor for accurate distance measurement.
+    Maintains current heading (does not reset yaw).
+
+    Args:
+        distance: Distance to travel in meters.
+        speed: Travel speed in m/s (default: 0.5, max: 1.5).
+        tolerance: Acceptable distance error in meters (default: 0.01 = 1cm).
+        timeout_seconds: Maximum time to complete (default: 30).
+
+    Returns:
+        Result with actual distance traveled.
+    """
+    try:
+        rvr_mgr, sensor_mgr, safety = _ensure_initialized()
+        rvr_mgr.ensure_connected()
+
+        await safety.on_movement_command()
+
+        # Clamp speed to safe range
+        speed = max(0.1, min(1.5, abs(speed)))
+
+        # Reset locator to origin
+        await rvr_mgr.rvr.reset_locator_x_and_y()
+        await asyncio.sleep(0.1)
+
+        # Start locator streaming
+        streaming_started = await sensor_mgr.ensure_locator_streaming(interval_ms=50)
+        if not streaming_started:
+            return {"success": False, "error": "Failed to start locator streaming"}
+
+        # Wait for first locator reading
+        await asyncio.sleep(0.1)
+
+        start_time = time.time()
+        poll_interval = 0.05
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                await rvr_mgr.rvr.drive_stop()
+                return {
+                    "success": False,
+                    "error": "Timeout reached",
+                    "distance_traveled": 0,
+                    "target_distance": distance,
+                    "elapsed_seconds": elapsed
+                }
+
+            # Get current position
+            position = await sensor_mgr.get_locator_position()
+            if position is None:
+                # Drive backward while waiting for position data
+                await rvr_mgr.rvr.drive_rc_si_units(
+                    linear_velocity=-speed,
+                    yaw_angular_velocity=0,
+                    flags=0
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
+            # Calculate distance traveled
+            current_distance = math.sqrt(position['x']**2 + position['y']**2)
+
+            # Check if target reached
+            remaining = distance - current_distance
+            if remaining <= tolerance:
+                await rvr_mgr.rvr.drive_stop()
+                await asyncio.sleep(0.1)
+
+                return {
+                    "success": True,
+                    "distance_traveled": current_distance,
+                    "target_distance": distance,
+                    "elapsed_seconds": time.time() - start_time
+                }
+
+            # Slow down as approaching target
+            current_speed = speed
+            if remaining < 0.05:  # Within 5cm
+                current_speed = max(0.1, speed * (remaining / 0.05))
+
+            # Drive backward (negative velocity)
+            await rvr_mgr.rvr.drive_rc_si_units(
+                linear_velocity=-current_speed,
+                yaw_angular_velocity=0,
+                flags=0
+            )
+
+            await asyncio.sleep(poll_interval)
+
+    except Exception as e:
+        try:
+            rvr_mgr, _, _ = _ensure_initialized()
+            await rvr_mgr.rvr.drive_stop()
+        except Exception:
+            pass
         return {"success": False, "error": str(e)}
 
 
