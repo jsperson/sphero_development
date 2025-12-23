@@ -114,6 +114,14 @@ You: Start streaming the accelerometer and gyroscope sensors
 
 You: Turn left 90 degrees
 
+You: What direction is the RVR facing?
+
+You: Drive forward 1 meter
+
+You: Pivot right 45 degrees
+
+You: What color is the floor?
+
 You: Emergency stop!
 ```
 
@@ -126,7 +134,7 @@ You: Emergency stop!
 | `disconnect` | Safely disconnect |
 | `get_connection_status` | Get connection state, uptime, firmware |
 
-### Movement (10 tools)
+### Movement (9 tools)
 | Tool | Description |
 |------|-------------|
 | `drive_with_heading` | Drive at speed toward heading (0-359°) |
@@ -139,6 +147,14 @@ You: Emergency stop!
 | `reset_yaw` | Set current heading as 0° |
 | `reset_locator` | Set current position as origin |
 
+### Navigation (4 tools)
+| Tool | Description |
+|------|-------------|
+| `get_heading` | Get compass heading from magnetometer (0-360°) |
+| `pivot` | Turn in place by degrees with magnetometer feedback |
+| `drive_forward` | Drive forward a distance in meters using locator |
+| `drive_backward` | Drive backward a distance in meters using locator |
+
 ### LEDs (3 tools)
 | Tool | Description |
 |------|-------------|
@@ -148,14 +164,15 @@ You: Emergency stop!
 
 LED groups: `headlight_left`, `headlight_right`, `brakelight_left`, `brakelight_right`, `status_indication_left`, `status_indication_right`, `battery_door_front`, `battery_door_rear`, `power_button_front`, `power_button_rear`, `undercarriage_white`
 
-### Sensors (5 tools)
+### Sensors (6 tools)
 | Tool | Description |
 |------|-------------|
 | `start_sensor_streaming` | Start background sensor streaming |
 | `stop_sensor_streaming` | Stop all streaming |
 | `get_sensor_data` | Get cached sensor readings |
 | `get_ambient_light` | Query light sensor directly |
-| `get_color_detection` | Query color sensor directly |
+| `get_color_detection` | Query color sensor (auto-enables LED) |
+| `enable_color_detection` | Enable/disable color sensor LED |
 
 Streamable sensors: `accelerometer`, `gyroscope`, `imu`, `locator`, `velocity`, `speed`, `quaternion`, `color_detection`, `ambient_light`, `encoders`, `core_time`
 
