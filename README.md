@@ -1,4 +1,17 @@
-# Sphero RVR MCP Server
+# ⚠️ DEPRECATED - This repository has moved!
+
+**This repo is no longer maintained. Please use the new repository:**
+
+## 👉 [github.com/jsperson/sphero_rvr_mcp](https://github.com/jsperson/sphero_rvr_mcp)
+
+**Install from PyPI:**
+```bash
+pip install sphero-rvr-mcp
+```
+
+---
+
+# Sphero RVR MCP Server (Archived)
 
 An MCP (Model Context Protocol) server that enables Claude AI to control a [Sphero RVR](https://sphero.com/collections/rvr) robot. Run this on a Raspberry Pi connected to your RVR, and use Claude Code to drive, control LEDs, read sensors, and more.
 
@@ -20,7 +33,7 @@ An MCP (Model Context Protocol) server that enables Claude AI to control a [Sphe
 
 ### 1. Clone the Sphero SDK
 
-The Sphero SDK should be available on your Pi:
+The Sphero SDK is not available on PyPI and must be installed manually:
 
 ```bash
 cd ~
@@ -29,20 +42,43 @@ git clone https://github.com/sphero-inc/sphero-sdk-raspberrypi-python.git
 
 ### 2. Install the MCP Server
 
+**Option A: Install from PyPI** (recommended)
+
+```bash
+pip install sphero-rvr-mcp
+
+# Add Sphero SDK to Python path (add to ~/.bashrc for persistence)
+export PYTHONPATH="${PYTHONPATH}:${HOME}/sphero-sdk-raspberrypi-python"
+```
+
+**Option B: Install from source**
+
 ```bash
 cd /path/to/sphero_development
 
 # Install the package in development mode
 pip install -e .
 
-# Install dependencies
-pip install fastmcp pydantic
-
 # Add Sphero SDK to Python path (add to ~/.bashrc for persistence)
 export PYTHONPATH="${PYTHONPATH}:${HOME}/sphero-sdk-raspberrypi-python"
 ```
 
-### 3. Install Claude Code
+### 3. Verify Installation
+
+Run the pre-flight check to verify everything is set up correctly:
+
+```bash
+sphero-rvr-mcp --check
+```
+
+This will verify:
+- Python version (requires 3.10+)
+- Sphero SDK is installed
+- FastMCP is installed
+- Serial port exists and is accessible
+- Current configuration settings
+
+### 4. Install Claude Code
 
 ```bash
 # Install Node.js if not already installed
@@ -53,7 +89,7 @@ sudo apt-get install -y nodejs
 npm install -g @anthropic-ai/claude-code
 ```
 
-### 4. Configure Claude Code
+### 5. Configure Claude Code
 
 Create or edit `~/.claude.json` (replace `<your-home-dir>` with your home path, e.g., `/home/pi`):
 
@@ -247,6 +283,7 @@ You: Clear the emergency stop
 sphero_development/
 ├── pyproject.toml              # Package configuration
 ├── README.md                   # This file
+├── LICENSE                     # MIT License
 └── src/sphero_rvr_mcp/
     ├── __init__.py
     ├── __main__.py             # Entry point
